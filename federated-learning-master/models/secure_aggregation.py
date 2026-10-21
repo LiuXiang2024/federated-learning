@@ -34,7 +34,7 @@ class ModelLayout:
         for key in self.keys:
             tensor = template[key]
             if not tensor.is_floating_point():
-                # 当前 CNN/MLP 没有整数 buffer；新增 BatchNorm 等模型时需明确另定策略。
+                # 当前 CNN 没有整数 buffer；新增 BatchNorm 等模型时需明确另定策略。
                 raise AggregationError("Unsupported nonfloating model state: " + key)
             size = tensor.numel()
             self.entries.append(dict(name=key, shape=list(tensor.shape), dtype=str(tensor.dtype),

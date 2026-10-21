@@ -70,6 +70,7 @@ def reconstruct_secret(pairs, m0, threshold):
 
 @dataclass(frozen=True)
 class Upload:
+    """客户端上传：不包含组秘密、轮密钥、秘密份额或私钥。"""
     user_id: int
     es_id: int
     round_id: int
@@ -343,12 +344,14 @@ class AS:
             secret = secrets.randbits(256)
             m0, moduli = parameters
             shares = share_secret(secret, len(users), self.threshold, parameters)
+            # AS 保留自己生成的秘密，后续验签与去掩码不依赖客户端回传秘密。
             self.group_seeds[es_id] = secret
             for position, user in enumerate(users):
                 others = [(shares[index], moduli[index]) for index in range(len(users))
                           if index != position][:self.threshold-1]
                 user.reconstruct_seed((shares[position], moduli[position]), others,
                                       m0, self.threshold)
+                # 仅用于软件模拟的重构一致性检查，不形成秘密上传消息。
                 if user.group_seed != secret:
                     raise ProtocolError("Group secret reconstruction failed")
                 user.prepare_round(round_id, self.pk)
@@ -411,6 +414,7 @@ class AS:
             sigma += response.sigma
             for upload in batch.uploads:
                 PID, X, R, es_id = self.registry[upload.user_id]
+                # 组秘密取自 AS 本轮本地状态；PID/Y 是上传的公开派生上下文。
                 key = self.ta.H6(self.group_seeds[es_id], upload.PID,
                                  upload.Y ** self.sk, upload.round_id)
                 coefficient = self.ta.group.init(ZR, coefficients[upload.user_id])

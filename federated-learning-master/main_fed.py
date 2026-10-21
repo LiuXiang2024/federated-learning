@@ -9,7 +9,7 @@ import traceback
 import numpy as np
 import torch
 
-from models.Nets import MLP, CNNMnist
+from models.Nets import CNNMnist
 from models.Update import LocalUpdate
 from models.secure_aggregation import ModelAggregator, load_protocol
 from models.test import test_img, prediction_agreement
@@ -29,8 +29,8 @@ def validate_args(args):
         raise ValueError("轮数、epoch 数和 batch size 必须为正数")
     if not np.isfinite(args.lr) or args.lr <= 0 or not np.isfinite(args.momentum) or not 0 <= args.momentum < 1:
         raise ValueError("学习率必须为正数，SGD 动量必须属于 [0,1)")
-    if args.dataset != 'mnist' or args.model not in ('cnn', 'mlp'):
-        raise ValueError("数据集仅支持 mnist，模型仅支持 cnn/mlp")
+    if args.dataset != 'mnist' or args.model != 'cnn' or args.iid is not True:
+        raise ValueError("本次实验仅支持 MNIST、CNN 和 IID 划分")
     if args.num_classes != 10:
         raise ValueError("MNIST 正式任务必须使用 10 类")
     expected_channels = 1
@@ -48,13 +48,6 @@ def validate_args(args):
         raise ValueError("每次重复的训练种子必须位于 [0,2**32)")
     seeds = list(range(args.seed, args.seed + args.repeats))
     return seeds
-
-
-def build_model(args, image_shape):
-    # 保持现有网络层结构；MLP 隐藏层沿用原 main_fed.py 的 200 维。
-    if args.model == 'cnn':
-        return CNNMnist(args)
-    return MLP(dim_in=int(np.prod(image_shape)), dim_hidden=200, dim_out=args.num_classes)
 
 
 def source_fingerprints(args):
@@ -78,7 +71,6 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
     save_json(directory / 'config.json', config)
     save_json(directory / 'status.json', dict(status='running', committed_round=0))
     try:
-        print('[{}] seed={} mode initialization'.format(args.aggregation, seed), flush=True)
         aggregator = ModelAggregator(initial_state, args)
         save_json(directory / 'model_layout.json', aggregator.binding)
         net = copy.deepcopy(template).to(args.device)
@@ -87,10 +79,9 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
         torch.save(initial_state, directory / 'last_good_model.pt')
         # 默认逐轮、逐客户端显示进度，flush 保证管道日志即时可见。
         for round_id in range(1, args.epochs + 1):
-            print('[{}] round {}/{} START'.format(args.aggregation, round_id, args.epochs), flush=True)
             phase, states, local_losses = 'local_training', [], []
             for client_id in range(args.num_users):
-                print('[{}] round {}/{} client {}/{} START'.format(
+                print('[{}] round {}/{} client {}/{}'.format(
                     args.aggregation, round_id, args.epochs, client_id + 1, args.num_users), flush=True)
                 local_seed = derived_seed(seed, round_id, client_id)
                 set_training_seed(local_seed)
@@ -98,10 +89,7 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
                 weights, local_loss = local.train(copy.deepcopy(net).to(args.device))
                 states.append(weights)
                 local_losses.append(local_loss)
-                print('[{}] round {}/{} client {}/{} DONE loss={:.6f}'.format(
-                    args.aggregation, round_id, args.epochs, client_id + 1, args.num_users, local_loss), flush=True)
             client_id, phase = None, 'aggregation'
-            print('[{}] aggregation and validation START'.format(args.aggregation), flush=True)
             result = aggregator.aggregate(states, round_id)
             del states
             candidate = copy.deepcopy(template).to(args.device)
@@ -122,7 +110,6 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
                 diagnostics['prediction_agreement'] = None
                 diagnostics['consistency_passed'] = None
             phase = 'evaluation'
-            print('[{}] evaluation START'.format(args.aggregation), flush=True)
             accuracy, test_loss = test_img(candidate, test, args)
             row = dict(status='ok', dataset=args.dataset, model=args.model,
                        iid=args.iid, mode=args.aggregation, seed=seed, round=round_id,
@@ -139,8 +126,8 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
             append_record(directory / 'metrics.jsonl', row)
             records.append(row)
             save_json(directory / 'status.json', dict(status='running', committed_round=round_id))
-            print('{} seed={} round={}/{} accuracy={:.3f}% test_loss={:.6f}'.format(
-                args.aggregation, seed, round_id, args.epochs, accuracy, test_loss), flush=True)
+            print('[{}] round {}/{} test_accuracy={:.3f}% test_loss={:.6f}'.format(
+                args.aggregation, round_id, args.epochs, accuracy, test_loss), flush=True)
             del candidate, result
         target_round = next((row['round'] for row in records
                              if args.target_accuracy is not None and row['test_accuracy'] >= args.target_accuracy), None)
@@ -164,9 +151,7 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
 
 def main():
     args = args_parser()
-    print('Training startup: loading data and preparing paired comparison', flush=True)
     seeds = validate_args(args)
-    print("Independent repeats={} training seeds={}".format(args.repeats, seeds), flush=True)
     args.device = resolve_device(args)
     # 提前检查导入，使缺失协议依赖不会在数小时明文训练之后才暴露。
     modes = ['float', 'trsfl'] if args.aggregation == 'all' else [args.aggregation]
@@ -177,7 +162,7 @@ def main():
     if tuple(train[0][0].shape) != expected_shape or tuple(test[0][0].shape) != expected_shape:
         raise ValueError("实际图片形状与选定数据集不匹配")
     fingerprints = dict(train=dataset_fingerprint(train), test=dataset_fingerprint(test))
-    task = '{}_{}_{}'.format(args.dataset, args.model, 'iid' if args.iid else 'noniid')
+    task = 'mnist_cnn_iid'
     task_dir = Path(args.result_dir).resolve() / task
     sources = source_fingerprints(args)
     runtime = environment_record(args.device)
@@ -189,7 +174,7 @@ def main():
                             cudnn_version=runtime['cudnn_version'], gpu_name=runtime['gpu_name'])
     for seed in seeds:
         set_training_seed(derived_seed(seed, 0, 0))
-        template = build_model(args, expected_shape)
+        template = CNNMnist(args)
         initial = {key: value.detach().cpu().clone() for key, value in template.state_dict().items()}
         # 配对信息包含所有影响训练及编码的配置，跨命令复用时逐项比对。
         pair_config = dict(dataset=args.dataset, model=args.model, iid=args.iid, seed=seed,

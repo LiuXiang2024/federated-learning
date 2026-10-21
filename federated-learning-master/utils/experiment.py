@@ -117,12 +117,12 @@ def prepare_pairing(directory, dataset, initial_state, config):
         saved = json.loads(split_path.read_text(encoding='utf-8'))
         partition = {int(key): value for key, value in saved['clients'].items()}
     else:
-        partition = balanced_partition(dataset, config['num_users'], config['iid'], config['seed'])
+        partition = balanced_partition(dataset, config['num_users'], config['seed'])
         labels = labels_of(dataset)
         histograms = {str(client): np.bincount(labels[indices], minlength=10).tolist()
                       for client, indices in partition.items()}
         save_json(split_path, dict(clients=partition, label_histograms=histograms,
-                                   method='balanced-iid' if config['iid'] else 'label-sorted-{}-shards-two-per-client'.format(2 * config['num_users'])))
+                                   method='balanced-iid'))
     validate_partition(partition, len(dataset), config['num_users'])
     initial_path = directory / 'initial_model.pt'
     if initial_path.exists():

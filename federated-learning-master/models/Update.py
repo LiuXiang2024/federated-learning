@@ -1,4 +1,4 @@
-"""沿用原有 CNN/MLP 的本地 SGD；协议模块不参与模型训练。"""
+"""CNN 的本地 SGD；协议模块不参与模型训练。"""
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -33,8 +33,8 @@ class LocalUpdate:
         net.train()
         optimizer = torch.optim.SGD(net.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         loss_sum, samples_seen = 0.0, 0
-        for epoch in range(self.args.local_ep):
-            for batch_index, (images, labels) in enumerate(self.ldr_train):
+        for _ in range(self.args.local_ep):
+            for images, labels in self.ldr_train:
                 images, labels = images.to(self.args.device), labels.to(self.args.device)
                 optimizer.zero_grad()
                 loss = self.loss_func(net(images), labels)
@@ -45,10 +45,6 @@ class LocalUpdate:
                 # 对全部本地 epoch 的样本损失加权，避免最后一个小批次权重偏大。
                 loss_sum += loss.item() * labels.size(0)
                 samples_seen += labels.size(0)
-                if self.args.verbose and batch_index % 10 == 0:
-                    print("Local epoch {}, batch {}, loss {:.6f}".format(epoch, batch_index, loss.item()))
-            # 每个本地 epoch 结束即输出，不改变训练或随机数调用。
-            print("  Local epoch {}/{} DONE".format(epoch + 1, self.args.local_ep), flush=True)
         # 返回完整参数，转到 CPU 后立即复制，避免全部客户端模型同时占用 GPU 显存。
         state = {key: value.detach().cpu().clone() for key, value in net.state_dict().items()}
         return state, float(loss_sum / samples_seen)

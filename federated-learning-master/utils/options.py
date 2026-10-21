@@ -20,7 +20,7 @@ def args_parser():
     parser.add_argument('--split', type=str, default='user', help="train-test split type, user or sample")
 
     # model arguments
-    parser.add_argument('--model', type=str, default='mlp', help='model name')
+    parser.add_argument('--model', choices=['cnn'], default='cnn', help='固定使用 MNIST CNN')
     parser.add_argument('--kernel_num', type=int, default=9, help='number of each kind of kernel')
     parser.add_argument('--kernel_sizes', type=str, default='3,4,5',
                         help='comma-separated kernel size to use for convolution')
@@ -32,12 +32,11 @@ def args_parser():
     # 服务器实验仅使用 MNIST，在参数入口拒绝其他数据集。
     # other arguments
     parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist'], help="MNIST only")
-    parser.add_argument('--iid', action='store_true', help='whether i.i.d or not')
+    parser.add_argument('--iid', action='store_true', default=True, help='固定使用 IID 划分（默认启用）')
     parser.add_argument('--num_classes', type=int, default=10, help="number of classes")
     parser.add_argument('--num_channels', type=int, default=None, help="MNIST 使用单通道 1")
     parser.add_argument('--gpu', type=int, default=0, help="GPU ID, -1 for CPU")
     parser.add_argument('--stopping_rounds', type=int, default=10, help='rounds of early stopping')
-    parser.add_argument('--verbose', action='store_true', help='verbose print')
     parser.add_argument('--seed', type=int, default=1, help='独立重复实验的起始训练种子；协议密钥使用独立随机源')
     parser.add_argument('--repeats', type=int, default=1, help='独立重复次数；各次使用 seed + 重复编号，不是客户端数量')
     parser.add_argument('--all_clients', action='store_true', help='aggregation over all clients')

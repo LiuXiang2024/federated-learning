@@ -1,18 +1,19 @@
 """仅供服务器手动运行的接口验证，不是训练实验，也不输出准确率结论。
 
 这里使用可核算的确定性整数/小模型状态验证边界；正式入口始终上传真实 SGD 输出。
-本次本地交付只做源码静态检查，未执行这些用例。
+codec 用例无需密码学依赖；protocol 用例需要 Charm EC 与 PyCryptodome。
 """
 import argparse
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
 
-from models.Nets import MLP
+from models.Nets import CNNMnist
 from models.secure_aggregation import (AggregationError, DEFAULT_MODULUS, FixedPointCodec,
                                        ModelLayout, ModelAggregator, load_protocol)
 from utils.sampling import balanced_partition
@@ -26,14 +27,29 @@ def arguments(mode):
 
 
 class CodecChecks(unittest.TestCase):
+    def test_default_experiment_is_cnn_iid(self):
+        from utils.options import args_parser
+        with patch('sys.argv', ['main_fed.py']):
+            args = args_parser()
+        self.assertEqual(args.model, 'cnn')
+        self.assertIs(args.iid, True)
+
     def test_repeat_seeds_and_boundary_validation(self):
         from main_fed import validate_args
         args = SimpleNamespace(num_users=20, num_es=2, frac=1.0, threshold=3,
                                epochs=100, local_ep=3, local_bs=32, bs=128,
-                               lr=0.01, momentum=0.5, dataset='mnist', model='cnn',
+                               lr=0.01, momentum=0.5, dataset='mnist', model='cnn', iid=True,
                                num_classes=10, num_channels=1, target_accuracy=None,
                                seed=1, repeats=1)
         self.assertEqual(validate_args(args), [1])
+        args.iid = False
+        with self.assertRaises(ValueError):
+            validate_args(args)
+        args.iid = True
+        args.model = 'unsupported'
+        with self.assertRaises(ValueError):
+            validate_args(args)
+        args.model = 'cnn'
         args.repeats = 0
         with self.assertRaises(ValueError):
             validate_args(args)
@@ -42,7 +58,7 @@ class CodecChecks(unittest.TestCase):
             validate_args(args)
 
     def test_layout_uses_complete_model_and_roundtrips(self):
-        state = MLP(4, 20, 2).state_dict()
+        state = CNNMnist(SimpleNamespace(num_channels=1, num_classes=10)).state_dict()
         layout = ModelLayout(state)
         self.assertGreater(layout.dimension, 64)
         restored = layout.restore(layout.flatten(state))
@@ -88,17 +104,23 @@ class CodecChecks(unittest.TestCase):
         self.assertTrue(torch.equal(result.reference_state['weight'], torch.full((65,), -0.05)))
         self.assertIsNone(result.diagnostics['protocol_verified'])
 
-    def test_partitions_cover_balanced_data_for_both_distributions(self):
+    def test_iid_partition_covers_balanced_data(self):
         class Dataset:
             targets = np.repeat(np.arange(10), 60)
 
             def __len__(self):
                 return len(self.targets)
-        for iid in (True, False):
-            partition = balanced_partition(Dataset(), 20, iid, 7)
-            self.assertEqual(partition, balanced_partition(Dataset(), 20, iid, 7))
-            self.assertEqual({len(indices) for indices in partition.values()}, {30})
-            self.assertEqual(sorted(index for indices in partition.values() for index in indices), list(range(600)))
+        partition = balanced_partition(Dataset(), 20, 7)
+        self.assertEqual(partition, balanced_partition(Dataset(), 20, 7))
+        self.assertEqual({len(indices) for indices in partition.values()}, {30})
+        self.assertEqual(sorted(index for indices in partition.values() for index in indices), list(range(600)))
+        self.assertNotEqual(partition, balanced_partition(Dataset(), 20, 8))
+        self.assertTrue(all(len(np.unique(Dataset.targets[indices])) > 2
+                            for indices in partition.values()))
+
+    def test_iid_partition_rejects_uneven_sample_count(self):
+        with self.assertRaises(ValueError):
+            balanced_partition(range(601), 20, 7)
 
 
 class ProtocolChecks(unittest.TestCase):
@@ -126,6 +148,22 @@ class ProtocolChecks(unittest.TestCase):
         for client in range(20):
             protocol.submit(client, [1] * 65)
         self.assertEqual(protocol.finalize(), [20] * 65)
+
+    def test_as_uses_its_own_round_secrets_without_client_secret_upload(self):
+        protocol = self.new_protocol()
+        self.populate(protocol)
+        # 上传只携带公开上下文、密文和认证信息，不携带组秘密、轮密钥或份额。
+        self.assertEqual({field.name for field in fields(self.module.Upload)},
+                         {'user_id', 'es_id', 'round_id', 'PID', 'Com', 'Y',
+                          'timestamp', 'C', 'tau', 'sigma'})
+        for user in protocol.users:
+            self.assertEqual(user.group_seed, protocol.as_server.group_seeds[user.es_id])
+            # 上传完成后清除客户端秘密；AS 必须仍能独立验签和去掩码。
+            user.group_seed = user.k = user.x = user.y = user.d = None
+        protocol.users.clear()
+        protocol.groups.clear()
+        expected = [sum(range(-10, 10)) % DEFAULT_MODULUS] * 65
+        self.assertEqual(protocol.finalize(), expected)
 
     def test_es_rejects_tampering_at_last_coordinate(self):
         protocol = self.new_protocol()
