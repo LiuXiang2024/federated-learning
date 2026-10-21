@@ -1,0 +1,3 @@
+# 使用已有 Hugging Face Parquet 数据时安装；不额外引入 datasets/Flower。
+-r requirements.txt
+pyarrow

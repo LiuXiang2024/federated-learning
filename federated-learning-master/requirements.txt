@@ -1,0 +1,17 @@
+# 由服务器管理员先选择与 Python/CUDA/驱动匹配的 torch、torchvision 组合。
+# 此文件列出直接依赖，不代表已验证的版本锁定文件；不要沿用原 0.4.1/0.2.1。
+# 代码使用 torch.load(weights_only=True) 和确定性算法 API。
+# 部署前记录实际环境版本；旧部署目录已删除，不作为新配置环境依据。
+torch
+torchvision
+numpy
+matplotlib
+pycryptodome
+sympy
+Pillow
+# 当前官方发行名为 charm-crypto-framework，Python 中仍 import charm。
+# 先按 README.md 确认并构建 EC 后端，再安装；不能用旧 charm-crypto 代替。
+charm-crypto-framework==0.62
+pyparsing>=3,<4
+# Parquet 数据入口的可选依赖见 requirements-parquet.txt。
+
