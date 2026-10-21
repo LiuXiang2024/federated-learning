@@ -54,7 +54,7 @@ F:\FL\
 
 `requirements.txt` 列出直接依赖，不是已验证的版本锁定文件。部署时先选用与驱动、CUDA 和 Python 匹配的 PyTorch/torchvision，再安装项目依赖。Charm 使用 `charm-crypto-framework==0.62`，需可用的 EC 后端及曲线 714；不要用旧的 `charm-crypto` 发行包替代。构建环境通常需要编译工具、GMP 与 OpenSSL 开发库。Parquet 可选依赖见 `requirements-parquet.txt`。
 
-当前仅完成本地目录整理与代码更新；服务器旧目录未自动同步。[启动命令](启动命令.md)按代码平铺部署到 `/root/autodl-tmp/Parallel Computing` 编写，并显式复用服务器已有数据位置。运行前先同步代码，再进行单轮检查。
+当前服务器部署目标为 `/root/autodl-tmp/parallel-training`；旧版代码和历史结果另行保留。[启动命令](启动命令.md)按代码平铺部署到 `/root/autodl-tmp/parallel-training` 编写，并显式复用服务器已有数据位置。运行前先同步代码，再进行单轮检查。
 
 10 个工作进程共享一张 GPU，各有 CUDA 上下文和工作区；实际显存峰值和速度需在目标 GPU 测量。进程池按空闲情况派发任务，收齐 50 份结果后执行聚合。ES 分组与同时训练的 10 个任务没有固定对应关系。
 
@@ -62,7 +62,7 @@ F:\FL\
 
 ## 4. 结果文件与图片
 
-自定义 `--result_dir` 是下面的 `结果根目录`；启动命令同时通过 `tee` 把日志保存在本次运行目录。
+启动命令在代码目录的 `results/` 下创建独立运行目录，将该目录传给 `--result_dir`，并将 `train.log` 保存在同一目录。例如服务器目录为 `/root/autodl-tmp/parallel-training/results/运行名称/`，其中直接包含 `mnist_cnn_iid/` 或 `mnist_cnn_noniid/`。下面的 `结果根目录` 即该独立运行目录。
 
 ```text
 结果根目录/
