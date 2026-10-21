@@ -1,4 +1,4 @@
-"""随机打乱后等分的 IID 划分；覆盖全部样本，不丢弃余数。"""
+"""等量 IID 与标签排序分片 Non-IID 划分；完整覆盖全部样本。"""
 import numpy as np
 
 
@@ -23,6 +23,18 @@ def balanced_partition(dataset, num_users, seed):
     rng = np.random.default_rng(seed)
     pieces = np.split(rng.permutation(count), num_users)
     return {client: sorted(piece.tolist()) for client, piece in enumerate(pieces)}
+
+
+def label_shard_partition(dataset, num_users, seed):
+    count = len(dataset)
+    num_shards = num_users * 2
+    if num_users <= 0 or count < num_shards or count % num_shards:
+        raise ValueError("样本数必须能被两倍客户端数整除；不静默丢样本")
+    labels = labels_of(dataset)
+    shards = np.split(np.argsort(labels, kind='stable'), num_shards)
+    assignment = np.random.default_rng(seed).permutation(num_shards).reshape(num_users, 2)
+    return {client: sorted(np.concatenate([shards[index] for index in indices]).tolist())
+            for client, indices in enumerate(assignment)}
 
 
 # 保留旧训练代码使用的函数名；新入口显式提供种子并保存划分。

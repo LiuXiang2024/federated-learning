@@ -51,3 +51,27 @@ ENV/
 
 # Local server connection records
 /.server_known_hosts
+
+# Public datasets are downloaded separately to keep the repository small
+/data/
+
+# Local experiment artifacts and migration audit records
+/results/
+/docs/目录整理记录.json
+
+# Credentials and private keys
+.env
+.env.*
+!.env.example
+.netrc
+.pypirc
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+id_rsa
+id_ed25519
+credentials*.json
+secrets*.json

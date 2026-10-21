@@ -9,6 +9,9 @@ import numpy as np
 from utils.experiment import save_json
 
 
+ZOOM_ROUNDS = 20  # 局部窗口显示最后若干轮，短实验显示全部已有轮次。
+
+
 def read_json(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
@@ -26,6 +29,7 @@ def summarize_task(task_dir):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
 
     task_dir = Path(task_dir).resolve()
     runs, excluded, baseline_config = [], [], None
@@ -104,7 +108,8 @@ def summarize_task(task_dir):
                                               std_definition='sample standard deviation; null for a single repeat',
                                               missing_target_round='not reached or not configured; see target_status'))
     for field, label in (('test_accuracy', 'Test accuracy (%)'), ('test_loss', 'Test loss')):
-        figure, axis = plt.subplots()
+        figure, axis = plt.subplots(figsize=(7.5, 5.5), facecolor='white')
+        curves = []
         for mode in ('float', 'trsfl'):
             selected = [run for run in runs if run['config']['aggregation'] == mode]
             if not selected:
@@ -112,17 +117,42 @@ def summarize_task(task_dir):
             values = np.asarray([[row[field] for row in run['rows']] for run in selected])
             x = np.arange(1, values.shape[1] + 1)
             mean = values.mean(axis=0)
-            line, = axis.plot(x, mean, label='{} (n={})'.format(mode, len(selected)))
+            color, marker, name = ('#5296DD', 'o', 'FedAvg') if mode == 'float' else ('#FF6347', 's', 'TRS-FL')
+            style = dict(color=color, marker=marker, linewidth=1.6)
+            axis.plot(x, mean, label=name, markersize=5,
+                      markevery=max(1, len(x) // 10), **style)
+            std = np.zeros_like(mean)
             if len(selected) > 1:
                 std = values.std(axis=0, ddof=1)
-                axis.fill_between(x, mean - std, mean + std, color=line.get_color(), alpha=0.18)
+                axis.fill_between(x, mean - std, mean + std, color=color, alpha=0.18)
+            curves.append((mean, std, style))
         axis.set_xlabel('Global round')
         axis.set_ylabel(label)
-        if all(statistics[mode]['repeats'] == 1 for mode in statistics):
-            axis.set_title('Single run per mode; no SD band')
-        else:
-            axis.set_title('Mean; shading = +/- 1 sample SD when n >= 2')
-        axis.legend()
+        axis.legend(loc='upper left', bbox_to_anchor=(0.06, 1),
+                    frameon=True, framealpha=1, edgecolor='0.8')
+        axis.set_facecolor('white')
+        if len(x) > 1:
+            start = max(0, len(x) - ZOOM_ROUNDS)
+            count = len(x) - start
+            marker_indices = np.linspace(0, count, min(10, count) + 1, dtype=int)[1:] - 1
+            bounds = [0.49, 0.15, 0.46, 0.40] if field == 'test_accuracy' else [0.49, 0.51, 0.46, 0.40]
+            inset = axis.inset_axes(bounds)
+            for mean, std, style in curves:
+                inset.plot(x[start:], mean[start:], markersize=4, markevery=marker_indices, **style)
+                if np.any(std[start:] > 0):
+                    inset.fill_between(x[start:], (mean - std)[start:], (mean + std)[start:],
+                                       color=style['color'], alpha=0.18)
+            lower = min(float((mean - std)[start:].min()) for mean, std, _ in curves)
+            upper = max(float((mean + std)[start:].max()) for mean, std, _ in curves)
+            padding = max((upper - lower) * 0.15, abs(upper) * 1e-6, 1e-8)
+            inset.set_xlim(x[start] - 0.2, x[-1] + 0.2)
+            inset.set_ylim(lower - padding, upper + padding)
+            inset.xaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
+            inset.yaxis.set_major_locator(MaxNLocator(nbins=4))
+            inset.ticklabel_format(axis='y', style='plain', useOffset=False)
+            inset.tick_params(labelsize=9)
+            inset.grid(color='0.7', linewidth=0.7, alpha=0.8)
+            axis.indicate_inset_zoom(inset, edgecolor='0.45', alpha=0.65)
         figure.tight_layout()
         figure.savefig(output / (field + '.png'), dpi=180)
         plt.close(figure)

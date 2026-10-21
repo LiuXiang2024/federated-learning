@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""固定 20 客户端/2 ES 的浮点明文与 TRS-FL 两组训练对照。"""
+"""固定 50 客户端/2 ES 的浮点明文与 TRS-FL 两组训练对照。"""
 import copy
 import hashlib
 import json
@@ -10,7 +10,6 @@ import numpy as np
 import torch
 
 from models.Nets import CNNMnist
-from models.Update import LocalUpdate
 from models.secure_aggregation import ModelAggregator, load_protocol
 from models.test import test_img, prediction_agreement
 from utils.datasets import load_datasets
@@ -18,19 +17,22 @@ from utils.experiment import (append_record, dataset_fingerprint, derived_seed,
                               environment_record, prepare_pairing, resolve_device,
                               save_json, set_training_seed, state_fingerprint)
 from utils.options import args_parser
+from utils.client_training import ClientTrainer
 
 
 def validate_args(args):
-    if args.num_users != 20 or args.num_es != 2 or args.frac != 1.0:
-        raise ValueError("本次实验固定 20 客户端、2 ES、每组 10 人、全员参与")
+    if args.num_users != 50 or args.num_es != 2 or args.frac != 1.0:
+        raise ValueError("本次实验固定 50 客户端、2 ES、每组 25 人、全员参与")
     if not 1 <= args.threshold <= args.num_users // args.num_es:
-        raise ValueError("组内门限必须在 1 至 10 之间，默认 3")
+        raise ValueError("组内门限必须在 1 至 25 之间，默认 3")
+    if not 1 <= args.client_workers <= min(10, args.num_users):
+        raise ValueError("客户端训练进程数必须在 1 至 10 之间")
     if any(value <= 0 for value in (args.epochs, args.local_ep, args.local_bs, args.bs)):
         raise ValueError("轮数、epoch 数和 batch size 必须为正数")
     if not np.isfinite(args.lr) or args.lr <= 0 or not np.isfinite(args.momentum) or not 0 <= args.momentum < 1:
         raise ValueError("学习率必须为正数，SGD 动量必须属于 [0,1)")
-    if args.dataset != 'mnist' or args.model != 'cnn' or args.iid is not True:
-        raise ValueError("本次实验仅支持 MNIST、CNN 和 IID 划分")
+    if args.dataset != 'mnist' or args.model != 'cnn' or type(args.iid) is not bool:
+        raise ValueError("本次实验仅支持 MNIST、CNN 和 IID/Non-IID 划分")
     if args.num_classes != 10:
         raise ValueError("MNIST 正式任务必须使用 10 类")
     expected_channels = 1
@@ -54,7 +56,8 @@ def source_fingerprints(args):
     root = Path(__file__).resolve().parent
     files = ['main_fed.py', 'models/Nets.py', 'models/Update.py', 'models/Fed.py',
              'models/secure_aggregation.py', 'models/test.py', 'utils/sampling.py',
-             'utils/experiment.py', 'utils/datasets.py', 'utils/options.py']
+             'utils/experiment.py', 'utils/datasets.py', 'utils/options.py',
+             'utils/client_training.py']
     result = {file: hashlib.sha256((root / file).read_bytes()).hexdigest() for file in files}
     result['protocol'] = hashlib.sha256(Path(args.protocol_path).read_bytes()).hexdigest()
     return result
@@ -64,6 +67,7 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
     # 禁止覆盖已存在的模式目录；重跑使用新 result_dir，避免混入旧曲线。
     directory.mkdir(parents=True, exist_ok=False)
     round_id, client_id, phase = 0, None, 'initialization'
+    trainer = None
     records = []
     config = dict(pair_config, aggregation=args.aggregation, arguments={
         key: str(value) if isinstance(value, (Path, torch.device)) else value
@@ -77,18 +81,15 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
         net.load_state_dict(initial_state, strict=True)
         # checkpoint 只保存已经完成全部检查的全局模型；初始模型表示提交轮次 0。
         torch.save(initial_state, directory / 'last_good_model.pt')
-        # 默认逐轮、逐客户端显示进度，flush 保证管道日志即时可见。
+        trainer = ClientTrainer(args)
+        # 每种对照模式跨轮复用进程池；完成顺序不影响聚合的客户端顺序。
         for round_id in range(1, args.epochs + 1):
-            phase, states, local_losses = 'local_training', [], []
-            for client_id in range(args.num_users):
-                print('[{}] round {}/{} client {}/{}'.format(
-                    args.aggregation, round_id, args.epochs, client_id + 1, args.num_users), flush=True)
-                local_seed = derived_seed(seed, round_id, client_id)
-                set_training_seed(local_seed)
-                local = LocalUpdate(args, train, partition[client_id], seed=local_seed)
-                weights, local_loss = local.train(copy.deepcopy(net).to(args.device))
-                states.append(weights)
-                local_losses.append(local_loss)
+            phase = 'local_training'
+            print('[{}] round {}/{} parallel clients START workers={}'.format(
+                args.aggregation, round_id, args.epochs, args.client_workers), flush=True)
+            round_state = {key: value.detach().cpu().clone() for key, value in net.state_dict().items()}
+            states, local_losses = trainer.train_round(round_state, partition, seed, round_id)
+            del round_state
             client_id, phase = None, 'aggregation'
             result = aggregator.aggregate(states, round_id)
             del states
@@ -140,6 +141,7 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
             consistency_checked_rounds=sum(row['consistency_passed'] is True for row in records)))
         save_json(directory / 'status.json', dict(status='complete', committed_round=args.epochs))
     except Exception as error:
+        client_id = getattr(error, 'client_id', client_id)
         failure = dict(status='failed', seed=seed, mode=args.aggregation, round=round_id,
                        client_id=client_id, phase=phase, error_type=type(error).__name__,
                        reason=str(error), committed_round=records[-1]['round'] if records else 0)
@@ -147,6 +149,9 @@ def run_mode(args, seed, template, initial_state, partition, train, test, direct
         save_json(directory / 'failure.json', dict(failure, traceback=traceback.format_exc()))
         save_json(directory / 'status.json', failure)
         raise
+    finally:
+        if trainer is not None:
+            trainer.close()
 
 
 def main():
@@ -162,7 +167,7 @@ def main():
     if tuple(train[0][0].shape) != expected_shape or tuple(test[0][0].shape) != expected_shape:
         raise ValueError("实际图片形状与选定数据集不匹配")
     fingerprints = dict(train=dataset_fingerprint(train), test=dataset_fingerprint(test))
-    task = 'mnist_cnn_iid'
+    task = 'mnist_cnn_iid' if args.iid else 'mnist_cnn_noniid'
     task_dir = Path(args.result_dir).resolve() / task
     sources = source_fingerprints(args)
     runtime = environment_record(args.device)
@@ -178,9 +183,12 @@ def main():
         initial = {key: value.detach().cpu().clone() for key, value in template.state_dict().items()}
         # 配对信息包含所有影响训练及编码的配置，跨命令复用时逐项比对。
         pair_config = dict(dataset=args.dataset, model=args.model, iid=args.iid, seed=seed,
+                           partition_method='balanced-iid' if args.iid else 'label-sorted-shards-2',
                            num_users=args.num_users, num_es=args.num_es,
                            group_size=args.num_users // args.num_es, threshold=args.threshold,
                            epochs=args.epochs, local_ep=args.local_ep, local_bs=args.local_bs,
+                           client_workers=args.client_workers, client_threads=1,
+                           multiprocessing_start_method='spawn',
                            test_bs=args.bs, lr=args.lr, momentum=args.momentum,
                            weight_decay=0, lr_schedule='constant', preprocessing=preprocessing,
                            encoding_scale=args.encoding_scale, max_abs=args.max_abs,

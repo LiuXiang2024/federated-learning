@@ -495,4 +495,4 @@ class TRSFLProtocol:
 
 
 if __name__ == "__main__":
-    raise SystemExit("Use federated-learning-master/main_fed.py; no synthetic model input is generated here.")
+    raise SystemExit("Use main_fed.py; no synthetic model input is generated here.")

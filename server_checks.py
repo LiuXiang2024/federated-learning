@@ -23,7 +23,7 @@ def arguments(mode):
     return SimpleNamespace(aggregation=mode, encoding_scale=1000000, max_abs=100.0,
                            modulus=DEFAULT_MODULUS, num_users=20, num_es=2,
                            threshold=3, coefficient_bits=128, max_message_age=3600,
-                           curve_id=714, protocol_path=Path(__file__).resolve().parent.parent / 'TRS-FL.py')
+                           curve_id=714, protocol_path=Path(__file__).resolve().parent / 'TRS-FL.py')
 
 
 class CodecChecks(unittest.TestCase):
@@ -36,13 +36,19 @@ class CodecChecks(unittest.TestCase):
 
     def test_repeat_seeds_and_boundary_validation(self):
         from main_fed import validate_args
-        args = SimpleNamespace(num_users=20, num_es=2, frac=1.0, threshold=3,
+        args = SimpleNamespace(num_users=50, num_es=2, frac=1.0, threshold=3,
+                               client_workers=10,
                                epochs=100, local_ep=3, local_bs=32, bs=128,
                                lr=0.01, momentum=0.5, dataset='mnist', model='cnn', iid=True,
                                num_classes=10, num_channels=1, target_accuracy=None,
                                seed=1, repeats=1)
         self.assertEqual(validate_args(args), [1])
-        args.iid = False
+        for workers in (0, 11, 21):
+            args.client_workers = workers
+            with self.assertRaises(ValueError):
+                validate_args(args)
+        args.client_workers = 10
+        args.iid = 'unsupported'
         with self.assertRaises(ValueError):
             validate_args(args)
         args.iid = True
@@ -97,12 +103,17 @@ class CodecChecks(unittest.TestCase):
         with self.assertRaises(AggregationError):
             ModelLayout({'counter': torch.tensor(1)})
 
-    def test_internal_quantized_reference_averages_20_complete_states(self):
+    def test_internal_quantized_reference_averages_complete_states(self):
         template = {'weight': torch.zeros(65)}
-        states = [{'weight': torch.full((65,), 0.1 if client < 10 else -0.2)} for client in range(20)]
-        result = ModelAggregator(template, arguments('float')).aggregate(states, 1)
-        self.assertTrue(torch.equal(result.reference_state['weight'], torch.full((65,), -0.05)))
-        self.assertIsNone(result.diagnostics['protocol_verified'])
+        for count in (20, 50):
+            with self.subTest(participants=count):
+                args = arguments('float')
+                args.num_users = count
+                states = [{'weight': torch.full((65,), 0.1 if client < count // 2 else -0.2)}
+                          for client in range(count)]
+                result = ModelAggregator(template, args).aggregate(states, 1)
+                self.assertTrue(torch.equal(result.reference_state['weight'], torch.full((65,), -0.05)))
+                self.assertIsNone(result.diagnostics['protocol_verified'])
 
     def test_iid_partition_covers_balanced_data(self):
         class Dataset:

@@ -7,13 +7,15 @@ from pathlib import Path
 
 def args_parser():
     parser = argparse.ArgumentParser()
-    # 当前实验：20 客户端、2 ES，本地 3 epoch，全局聚合 100 轮，独立重复 1 次。
+    # 当前实验：50 客户端、2 ES，本地 3 epoch，全局聚合 100 轮，独立重复 1 次。
     # federated arguments
     parser.add_argument('--epochs', type=int, default=100, help="rounds of training")
-    parser.add_argument('--num_users', type=int, default=20, help="number of users: K")
+    parser.add_argument('--num_users', type=int, default=50, help="number of users: K")
     parser.add_argument('--frac', type=float, default=1.0, help="本实验固定全员参与")
     parser.add_argument('--local_ep', type=int, default=3, help="the number of local epochs: E")
     parser.add_argument('--local_bs', type=int, default=32, help="local batch size: B")
+    parser.add_argument('--client_workers', type=int, default=10,
+                        help='同时进行本地训练的进程数，默认 10；每个进程一个 CPU 线程')
     parser.add_argument('--bs', type=int, default=128, help="test batch size")
     parser.add_argument('--lr', type=float, default=0.01, help="learning rate")
     parser.add_argument('--momentum', type=float, default=0.5, help="SGD momentum (default: 0.5)")
@@ -32,7 +34,10 @@ def args_parser():
     # 服务器实验仅使用 MNIST，在参数入口拒绝其他数据集。
     # other arguments
     parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist'], help="MNIST only")
-    parser.add_argument('--iid', action='store_true', default=True, help='固定使用 IID 划分（默认启用）')
+    distribution = parser.add_mutually_exclusive_group()
+    distribution.add_argument('--iid', dest='iid', action='store_true', help='使用等量 IID 划分（默认）')
+    distribution.add_argument('--noniid', dest='iid', action='store_false', help='标签排序后每客户端随机分配两个分片')
+    parser.set_defaults(iid=True)
     parser.add_argument('--num_classes', type=int, default=10, help="number of classes")
     parser.add_argument('--num_channels', type=int, default=None, help="MNIST 使用单通道 1")
     parser.add_argument('--gpu', type=int, default=0, help="GPU ID, -1 for CPU")
@@ -52,11 +57,12 @@ def args_parser():
     parser.add_argument('--curve_id', type=int, default=714)
     parser.add_argument('--coefficient_bits', type=int, default=128)
     parser.add_argument('--max_message_age', type=int, default=3600, help='签密时间戳最大有效秒数')
-    parser.add_argument('--data_dir', type=Path, default=root / 'data')
+    parser.add_argument('--data_dir', type=Path,
+                        default=root / 'data')
     parser.add_argument('--data_format', choices=['torchvision', 'parquet'], default='torchvision')
     parser.add_argument('--download', action='store_true', help='明确启用 torchvision 数据下载')
     parser.add_argument('--result_dir', type=Path, default=root / 'results')
-    parser.add_argument('--protocol_path', type=Path, default=root.parent / 'TRS-FL.py')
+    parser.add_argument('--protocol_path', type=Path, default=root / 'TRS-FL.py')
     parser.add_argument('--device', default='auto', help='auto、cpu 或 cuda:N；显式 CUDA 不静默降级')
     parser.add_argument('--target_accuracy', type=float, default=None, help='预先固定的收敛准确率，单位百分比')
     parser.add_argument('--allow_nondeterministic', action='store_true', help='允许非确定性计算，需在报告中注明')
